@@ -1,47 +1,21 @@
 """
 Idaho Math Badging Survey — Diverging Bar Chart Visualizer
-===========================================================
-Usage
------
-  python survey_viz.py <input_csv> [options]
+==========================================================
+Run with no arguments for an interactive guided setup:
 
-  <input_csv>   Qualtrics-exported CSV (3-row header format).
-                Pre-filter rows BEFORE passing the file in; this script
-                visualizes whatever rows are present.
+    python3 survey_viz.py
 
-Options
--------
-  --split-col   Column name to use as the Yes/No cross-section split.
-                Default: B_1
+Or pass a CSV path to skip the file prompt:
 
-  --yes-label   Display label for the "Yes" group.  Default: "Math Badging"
-  --no-label    Display label for the "No" group.   Default: "Non-Badging"
-
-  --out-dir     Directory for saved PNG files.  Default: ./output
-  --no-save     Display charts interactively instead of saving to disk.
-  --dpi         Resolution of saved PNGs (default 150).
-
-  --title       Optional overall title suffix added to each chart header.
-
-Examples
---------
-  # Full dataset, default split on B_1
-  python survey_viz.py survey.csv
-
-  # Pre-filtered to 11th graders only, custom labels
-  python survey_viz.py survey_11th.csv --yes-label "Badging 11th" --no-label "Non-Badging 11th"
-
-  # Different split column (e.g. B_5 = badge awareness)
-  python survey_viz.py survey.csv --split-col B_5 --yes-label "Aware" --no-label "Not Aware"
+    python3 survey_viz.py your_survey.csv
 """
 
-import argparse
 import os
 import sys
+import glob
 import textwrap
 from pathlib import Path
 
-import matplotlib
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
@@ -50,6 +24,7 @@ import pandas as pd
 
 # ---------------------------------------------------------------------------
 # Survey structure definition
+# Edit this section when the survey instrument changes.
 # ---------------------------------------------------------------------------
 
 LIKERT_ORDER = [
@@ -61,16 +36,16 @@ LIKERT_ORDER = [
     "Strongly Agree",
 ]
 
-# Canonical normalisation — handles Qualtrics mixed-case exports
-LIKERT_NORM = {v.lower(): v for v in LIKERT_ORDER}
-LIKERT_NORM["strongly disagree"] = "Strongly Disagree"
-LIKERT_NORM["disagree"]          = "Disagree"
-LIKERT_NORM["somewhat disagree"] = "Somewhat Disagree"
-LIKERT_NORM["somewhat agree"]    = "Somewhat Agree"
-LIKERT_NORM["agree"]             = "Agree"
-LIKERT_NORM["strongly agree"]    = "Strongly Agree"
+# Normalises Qualtrics mixed-case exports to a single canonical form
+LIKERT_NORM = {
+    "strongly disagree": "Strongly Disagree",
+    "disagree":          "Disagree",
+    "somewhat disagree": "Somewhat Disagree",
+    "somewhat agree":    "Somewhat Agree",
+    "agree":             "Agree",
+    "strongly agree":    "Strongly Agree",
+}
 
-# Colour palette: negative (left) → positive (right)
 LIKERT_COLORS = {
     "Strongly Disagree": "#c0392b",
     "Disagree":          "#e07060",
@@ -80,14 +55,10 @@ LIKERT_COLORS = {
     "Strongly Agree":    "#1a5fa8",
 }
 
-# Multi-select questions (comma-separated values in a single cell)
-MULTI_SELECT_COLS = {"MUI_2", "MEI_2", "MCP_3", "B_6"}
-
-# Construct definitions: each entry is (column_id, short_label)
 CONSTRUCTS = [
     {
-        "key":   "MUI",
-        "title": "Math Utility & Identity",
+        "key":      "MUI",
+        "title":    "Math Utility & Identity",
         "subtitle": "How much students see math as relevant and important to them",
         "items": [
             ("MUI_1_1", "It is important for me to do well in math"),
@@ -97,8 +68,8 @@ CONSTRUCTS = [
         ],
     },
     {
-        "key":   "MEI",
-        "title": "Math Engagement & Interest",
+        "key":      "MEI",
+        "title":    "Math Engagement & Interest",
         "subtitle": "How much students enjoy and are engaged by math",
         "items": [
             ("MEI_1_1", "I enjoy learning math"),
@@ -108,8 +79,8 @@ CONSTRUCTS = [
         ],
     },
     {
-        "key":   "MCP",
-        "title": "Math Competence Perception",
+        "key":      "MCP",
+        "title":    "Math Competence Perception",
         "subtitle": "How capable students believe themselves to be in mathematics",
         "items": [
             ("MCP_1_1",  "I understand the math I have studied"),
@@ -125,17 +96,16 @@ CONSTRUCTS = [
     },
 ]
 
-# Single-select non-Likert questions rendered as horizontal bar charts
 SINGLE_SELECT = [
     {
-        "key":   "DE_Grade",
-        "title": "Current Grade Level",
+        "key":      "DE_Grade",
+        "title":    "Current Grade Level",
         "subtitle": "Distribution of respondents by grade",
-        "order": ["9th", "10th", "11th", "12th"],
+        "order":    ["9th", "10th", "11th", "12th"],
     },
     {
-        "key":   "DE_Class",
-        "title": "Current Math Class",
+        "key":      "DE_Class",
+        "title":    "Current Math Class",
         "subtitle": "Math course currently enrolled in",
         "order": [
             "Algebra 1 OR Math 1",
@@ -145,9 +115,9 @@ SINGLE_SELECT = [
         ],
     },
     {
-        "key":   "B_7",
-        "title": "Next Planned Math Course",
-        "subtitle": "Badging students only — which course comes next",
+        "key":          "B_7",
+        "title":        "Next Planned Math Course",
+        "subtitle":     "Badging students only — which course comes next",
         "badging_only": True,
         "order": [
             "Geometry (or Math 2)",
@@ -160,9 +130,9 @@ SINGLE_SELECT = [
         ],
     },
     {
-        "key":   "B_2",
-        "title": "Badging Class Progress",
-        "subtitle": "Where in their badging class students currently are",
+        "key":          "B_2",
+        "title":        "Badging Class Progress",
+        "subtitle":     "Where in their badging class students currently are",
         "badging_only": True,
         "order": [
             "Towards the beginning of my badging class",
@@ -171,38 +141,560 @@ SINGLE_SELECT = [
         ],
     },
     {
-        "key":   "B_5",
-        "title": "Badge Awareness",
-        "subtitle": "Were students aware they could earn math badges?",
+        "key":          "B_5",
+        "title":        "Badge Awareness",
+        "subtitle":     "Were students aware they could earn math badges?",
         "badging_only": True,
-        "order": ["Yes", "No"],
+        "order":        ["Yes", "No"],
     },
 ]
 
-# Multi-select questions rendered as frequency bar charts
 MULTI_SELECT_CHARTS = [
     {
-        "key":     "MUI_2",
-        "title":   "Post-Graduation Plans",
+        "key":      "MUI_2",
+        "title":    "Post-Graduation Plans",
         "subtitle": "What students plan to do after high school (select all that apply)",
     },
     {
-        "key":     "MEI_2",
-        "title":   "What Makes a Favourite Math Class",
+        "key":      "MEI_2",
+        "title":    "What Makes a Favourite Math Class",
         "subtitle": "Attributes of their favourite math class (select all that apply)",
     },
     {
-        "key":     "MCP_3",
-        "title":   "Sources of Math Difficulty",
+        "key":      "MCP_3",
+        "title":    "Sources of Math Difficulty",
         "subtitle": "What makes math class difficult (select all that apply)",
     },
     {
-        "key":     "B_6",
-        "title":   "Ideal Badge Uses",
-        "subtitle": "How students would ideally use their earned badges (select all that apply)",
+        "key":          "B_6",
+        "title":        "Ideal Badge Uses",
+        "subtitle":     "How students would ideally use their earned badges (select all that apply)",
         "badging_only": True,
     },
 ]
+
+# ---------------------------------------------------------------------------
+# Interactive wizard
+# ---------------------------------------------------------------------------
+
+DIVIDER  = "─" * 62
+DIVIDER2 = "═" * 62
+
+# Column descriptions shown to the user during the split-column step.
+# Add or update entries here whenever the survey instrument changes.
+COLUMN_DESCRIPTIONS = {
+    "B_1": "Are you currently a Math Badging student? (the primary split)",
+    "B_5": "Were you aware you could earn math badges in this course?",
+    "DE_Grade": "What grade are you in?  (not a Yes/No column)",
+}
+
+
+def _hr(double: bool = False):
+    print(DIVIDER2 if double else DIVIDER)
+
+
+def _blank():
+    print()
+
+
+def _ask(prompt: str, default: str = "") -> str:
+    """
+    Display a prompt and return the user's input.
+    Returns `default` when the user just presses Enter.
+    Exits cleanly on Ctrl-C or EOF.
+    """
+    display = f"  {prompt} [{default}]: " if default else f"  {prompt}: "
+    try:
+        val = input(display).strip()
+    except (EOFError, KeyboardInterrupt):
+        _blank()
+        print("  Cancelled — no files were written.")
+        sys.exit(0)
+    if val.lower() == "q":
+        _blank()
+        print("  Cancelled — no files were written.")
+        sys.exit(0)
+    return val if val else default
+
+
+def _warn(msg: str):
+    print(f"\n  ⚠  {msg}")
+
+
+def _err(msg: str):
+    print(f"\n  ✗  {msg}")
+
+
+def _ok(msg: str):
+    print(f"  ✓  {msg}")
+
+
+# ---------------------------------------------------------------------------
+# Step helpers
+# ---------------------------------------------------------------------------
+
+def _find_csv_files() -> list[str]:
+    """CSVs in the current working directory, newest first."""
+    files = glob.glob("*.csv")
+    files.sort(key=os.path.getmtime, reverse=True)
+    return files
+
+
+def _find_zip_files() -> list[str]:
+    """ZIP files in the current working directory."""
+    files = glob.glob("*.zip")
+    files.sort(key=os.path.getmtime, reverse=True)
+    return files
+
+
+def _preflight_check():
+    """
+    Look for common problems before asking any questions.
+    Warn about ZIPs (Qualtrics exports are often downloaded as ZIP).
+    Return a list of warning strings (empty = all clear).
+    """
+    warnings = []
+    zips = _find_zip_files()
+    if zips:
+        names = ", ".join(zips[:3])
+        warnings.append(
+            f"ZIP file(s) found: {names}\n"
+            "     Qualtrics exports are sometimes downloaded as a ZIP archive.\n"
+            "     If your CSV is inside a ZIP, you must extract it first:\n"
+            "       • Windows: right-click the ZIP → 'Extract All'\n"
+            "       • Mac: double-click the ZIP file\n"
+            "     Then move the extracted .csv file into this same folder."
+        )
+    return warnings
+
+
+def _step1_select_file(preselected: str | None) -> tuple[str, "pd.DataFrame"]:
+    """
+    STEP 1 — Locate and load the CSV.
+    Handles: preselected path, nearby CSVs, manual path entry, bad files.
+    Returns (csv_path, dataframe).
+    """
+    _blank()
+    print("  STEP 1 of 3  —  Select your data file")
+    _hr()
+    print(
+        "\n"
+        "  This tool expects a Qualtrics survey export in CSV format.\n"
+        "  The file must be:\n"
+        "    • Unzipped  (a plain .csv file, not a .zip archive)\n"
+        "    • Located in the same folder as this script  (survey_viz.py)\n"
+        "    • Exported from Qualtrics using:  Data & Analysis → Export Data → CSV\n"
+        "\n"
+        "  If your file is still inside a ZIP, close this program, extract the ZIP,\n"
+        "  and move the .csv file into this folder before running again."
+    )
+    _blank()
+
+    # --- If a path was given on the command line, validate and use it ---
+    if preselected:
+        if preselected.lower().endswith(".zip"):
+            _err(
+                f"'{preselected}' is a ZIP file.\n"
+                "     Please extract it and point to the .csv file inside."
+            )
+            sys.exit(1)
+        if not os.path.isfile(preselected):
+            _err(f"File not found: {preselected}")
+            sys.exit(1)
+        return _load_file(preselected)
+
+    # --- Auto-detect CSVs in the current folder ---
+    nearby = _find_csv_files()
+
+    if nearby:
+        print("  CSV files found in this folder (most recent first):")
+        _blank()
+        for i, f in enumerate(nearby[:9], 1):
+            size_kb = os.path.getsize(f) // 1024
+            mtime   = os.path.getmtime(f)
+            import datetime
+            age = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+            print(f"    {i})  {f:<45}  {size_kb:>5} KB   {age}")
+        _blank()
+        print("    0)  My file is somewhere else — let me type the path")
+        _hr()
+        print(
+            "  Tip: if you just exported from Qualtrics and the file is not listed,\n"
+            "  make sure you moved it into this folder and that it ends in .csv\n"
+            "  (not .xlsx or .zip)."
+        )
+        _blank()
+
+        while True:
+            choice = _ask("Enter a number to select a file, or 0 to type a path", default="1")
+            if choice.isdigit():
+                n = int(choice)
+                if 1 <= n <= len(nearby[:9]):
+                    return _load_file(nearby[n - 1])
+                elif n == 0:
+                    break  # fall through to manual entry
+                else:
+                    _warn(f"Please enter a number between 0 and {min(9, len(nearby))}.")
+            elif os.path.isfile(choice):
+                return _load_file(choice)
+            elif choice.lower().endswith(".zip"):
+                _warn(
+                    "That is a ZIP file. Please extract it first and select the .csv inside.\n"
+                    "     Windows: right-click → 'Extract All'   |   Mac: double-click the ZIP"
+                )
+            else:
+                _warn(f"'{choice}' not found. Try again, or enter 0 to type a path manually.")
+
+    else:
+        # No CSVs at all
+        _warn(
+            "No CSV files were found in this folder.\n"
+            "\n"
+            "     Where to find your data file:\n"
+            "       1. Log in to Qualtrics and open your survey.\n"
+            "       2. Go to  Data & Analysis  →  Export & Import  →  Export Data.\n"
+            "       3. Choose CSV format and click  Export Data.\n"
+            "       4. The file will download, often inside a ZIP archive.\n"
+            "       5. If it's a ZIP: extract it (right-click → Extract All on Windows;\n"
+            "          double-click on Mac).\n"
+            "       6. Move the .csv file into this folder:\n"
+            f"          {os.path.abspath('.')}\n"
+            "       7. Run this program again."
+        )
+        _blank()
+
+    # --- Manual path entry (loop until valid) ---
+    print("  Enter the full path to your CSV file.")
+    print("  Tip: you can drag the file onto this window instead of typing the path.")
+    _blank()
+    while True:
+        path = _ask("Path to CSV file")
+        if not path:
+            _warn("A file path is required. Press Ctrl-C to cancel.")
+            continue
+        path = path.strip("'\"")   # strip quotes that some OSes add when dragging
+        if path.lower().endswith(".zip"):
+            _warn(
+                "That is a ZIP file. Please extract it first.\n"
+                "     Windows: right-click → 'Extract All'   |   Mac: double-click the ZIP"
+            )
+            continue
+        if not path.lower().endswith(".csv"):
+            _warn(
+                f"'{os.path.basename(path)}' doesn't look like a CSV file.\n"
+                "     The file should end in  .csv  — make sure you exported as CSV,\n"
+                "     not Excel (.xlsx) or another format."
+            )
+            cont = _ask("Try to open it anyway? [y/N]", default="N").lower()
+            if cont not in ("y", "yes"):
+                continue
+        if not os.path.isfile(path):
+            _err(f"File not found: {path}")
+            _warn("Double-check the path, or drag the file onto this window.")
+            continue
+        return _load_file(path)
+
+
+def _load_file(path: str) -> tuple[str, "pd.DataFrame"]:
+    """Load and validate a CSV. Returns (path, df) or exits with a clear message."""
+    print(f"\n  Loading {os.path.basename(path)} …")
+    try:
+        df = load_qualtrics(path)
+    except Exception as exc:
+        _err(
+            f"Could not read the file: {exc}\n"
+            "\n"
+            "     Common causes:\n"
+            "       • The file is open in Excel — close it and try again.\n"
+            "       • The file is not a Qualtrics CSV export.\n"
+            "       • The file is corrupted or only partially downloaded."
+        )
+        sys.exit(1)
+
+    if len(df) == 0:
+        _err(
+            "The file loaded but contains no responses.\n"
+            "     Make sure this is the actual response export, not just a\n"
+            "     blank template or a file with only the header rows."
+        )
+        sys.exit(1)
+
+    _ok(f"{len(df)} responses loaded from {os.path.basename(path)}")
+    return path, df
+
+
+def _step2_split_column(df: "pd.DataFrame") -> tuple[str, str, str]:
+    """
+    STEP 2 — Choose which column splits the data into two groups,
+    then name each group. Returns (split_col, yes_label, no_label).
+    """
+    _blank()
+    print("  STEP 2 of 3  —  Choose your comparison groups")
+    _hr()
+    print(
+        "\n"
+        "  The charts compare two groups of respondents side by side.\n"
+        "  You choose which question defines those groups — it must be a\n"
+        "  Yes/No question (i.e. a column where every answer is either Yes or No).\n"
+        "\n"
+        "  For the standard Math Badging analysis, choose B_1 (option 1 below).\n"
+        "  You can also split on any other Yes/No column, for example B_5\n"
+        "  (badge awareness) to compare students who knew about badges vs. those\n"
+        "  who did not."
+    )
+    _blank()
+
+    # Detect binary Yes/No columns
+    binary_cols = [
+        col for col in df.columns
+        if set(df[col].dropna().unique()) <= {"Yes", "No"}
+        and "Yes" in df[col].values
+        and "No"  in df[col].values
+    ]
+
+    if binary_cols:
+        print("  Yes/No columns detected in this dataset:")
+        _blank()
+        for i, col in enumerate(binary_cols, 1):
+            yes_n = int((df[col] == "Yes").sum())
+            no_n  = int((df[col] == "No").sum())
+            desc  = COLUMN_DESCRIPTIONS.get(col, "")
+            desc_str = f"  ←  {desc}" if desc else ""
+            print(f"    {i})  {col:<12}  Yes: {yes_n:>3},  No: {no_n:>3}{desc_str}")
+        _blank()
+        print("    0)  I want to enter a column name manually")
+        _hr()
+
+        default_idx = "1"
+        while True:
+            choice = _ask(
+                "Which column defines your two groups?  (Enter a number)",
+                default=default_idx,
+            )
+            if choice.isdigit():
+                n = int(choice)
+                if 1 <= n <= len(binary_cols):
+                    split_col = binary_cols[n - 1]
+                    break
+                elif n == 0:
+                    split_col = _ask_column_manually(df)
+                    break
+                else:
+                    _warn(f"Please enter a number between 0 and {len(binary_cols)}.")
+            else:
+                # User typed a column name directly
+                if choice in df.columns:
+                    split_col = choice
+                    break
+                _warn(
+                    f"'{choice}' is not a recognised column name.\n"
+                    "     Enter a number from the list, or 0 to type a column name."
+                )
+    else:
+        _warn(
+            "No Yes/No columns were automatically detected.\n"
+            "     This can happen if the split column uses different values\n"
+            "     (e.g. 'yes'/'no' in lowercase, or '1'/'0').\n"
+            "     You can still enter the column name manually below."
+        )
+        _blank()
+        split_col = _ask_column_manually(df)
+
+    # Confirm the split counts
+    yes_n = int((df[split_col] == "Yes").sum())
+    no_n  = int((df[split_col] == "No").sum())
+    other_n = len(df) - yes_n - no_n
+    _blank()
+    print(f"  Selected column:  {split_col}")
+    print(f"    'Yes' responses:  {yes_n}")
+    print(f"    'No'  responses:  {no_n}")
+    if other_n > 0:
+        _warn(
+            f"{other_n} row(s) have a value other than Yes/No in this column\n"
+            "     and will be excluded from both groups."
+        )
+    _blank()
+
+    if yes_n == 0 or no_n == 0:
+        _err(
+            "One group has zero respondents — charts cannot be generated.\n"
+            "     Choose a different split column, or check that your data\n"
+            "     has not been pre-filtered to a single group."
+        )
+        sys.exit(1)
+
+    # Name the groups
+    _hr()
+    print(
+        "\n"
+        "  Now give each group a short label that will appear on the charts.\n"
+        "  Press Enter to accept the suggested label, or type your own.\n"
+        "  Keep labels short — they sit on the right-hand axis of each chart.\n"
+        "  Examples:  'Badging'  'Non-Badging'  'Badge Aware'  '11th Grade'\n"
+    )
+    yes_label = _ask(f'Label for the "Yes" group  ({yes_n} students)', default="Math Badging")
+    no_label  = _ask(f'Label for the "No"  group  ({no_n} students)',  default="Non-Badging")
+
+    return split_col, yes_label, no_label
+
+
+def _ask_column_manually(df: "pd.DataFrame") -> str:
+    """Prompt the user to type a column name, with retry on bad input."""
+    print("\n  Available columns in this dataset:")
+    cols = [c for c in df.columns
+            if c not in ("StartDate","EndDate","Status","IPAddress","Progress",
+                         "Duration (in seconds)","Finished","RecordedDate",
+                         "ResponseId","RecipientLastName","RecipientFirstName",
+                         "RecipientEmail","ExternalReference",
+                         "LocationLatitude","LocationLongitude",
+                         "DistributionChannel","UserLanguage")]
+    for col in cols:
+        print(f"      {col}")
+    _blank()
+    while True:
+        name = _ask("Column name")
+        if name in df.columns:
+            return name
+        _warn(f"'{name}' not found. Check the spelling (column names are case-sensitive).")
+
+
+def _step3_output_settings() -> tuple[str, str, int]:
+    """
+    STEP 3 — Title suffix, output folder, resolution.
+    Returns (title_suffix, out_dir, dpi).
+    """
+    _blank()
+    print("  STEP 3 of 3  —  Output settings")
+    _hr()
+    print(
+        "\n"
+        "  The tool will generate a single PDF report containing a cover page and all 12 charts.\n"
+        "  All charts are generated automatically and assembled into one file.\n"
+    )
+
+    # Title suffix
+    print(
+        "  TITLE SUFFIX\n"
+        "  A short label added to the top of every chart — useful for keeping\n"
+        "  track of which run produced which charts.\n"
+        "  Examples:  'Spring 2026'  |  '11th Grade Only'  |  'Region 1'\n"
+        "  Leave blank to omit a suffix.\n"
+    )
+    title = _ask("Title suffix", default="")
+
+    _blank()
+
+    # Output folder
+    print(
+        "  OUTPUT FOLDER\n"
+        "  The PDF will be saved here. The folder will be created\n"
+        "  automatically if it does not already exist. Using a descriptive name\n"
+        "  helps you keep runs organised.\n"
+        "  Examples:  'output'  |  'charts_spring2026'  |  'region1_11th'\n"
+    )
+    out_dir = _ask("Output folder name", default="output")
+
+    _blank()
+
+    # DPI
+    print(
+        "  IMAGE RESOLUTION (DPI)\n"
+        "    150 DPI  —  good for on-screen viewing and presentations\n"
+        "    300 DPI  —  recommended for printed reports and publications\n"
+        "    96  DPI  —  smaller file size, fine for email or drafts\n"
+    )
+    while True:
+        dpi_str = _ask("Resolution in DPI", default="150")
+        if dpi_str.isdigit() and 72 <= int(dpi_str) <= 600:
+            dpi = int(dpi_str)
+            break
+        _warn("Please enter a whole number between 72 and 600  (150 is a good default).")
+
+    return title, out_dir, dpi
+
+
+def run_wizard(preselected_csv: str | None) -> dict:
+    """
+    Full interactive wizard. Returns a config dict ready for main().
+    """
+    # Header
+    _blank()
+    _hr(double=True)
+    print("  Idaho High School Math Survey  —  Chart Generator")
+    _hr(double=True)
+    _blank()
+    print("  This tool walks you through 3 short steps and then")
+    print("  automatically generates all 12 analysis charts as PNG files.")
+    _blank()
+    print("  At each prompt:")
+    print("    • Press Enter to accept the  [default value]  shown in brackets.")
+    print("    • Type your answer and press Enter to choose something different.")
+    print("    • Type  q  and press Enter (or press Ctrl-C) at any time to quit.")
+    _blank()
+
+    # Pre-flight warnings
+    warnings = _preflight_check()
+    if warnings:
+        _hr()
+        print("  ⚠  BEFORE YOU CONTINUE — please read:")
+        _blank()
+        for w in warnings:
+            print(f"  {w}")
+        _blank()
+        cont = _ask("Continue anyway?  [Y/n]", default="Y").lower()
+        if cont not in ("y", "yes", ""):
+            print("  Cancelled — no files were written.")
+            sys.exit(0)
+
+    _hr()
+
+    # Step 1 — file
+    csv_path, df = _step1_select_file(preselected_csv)
+
+    # Step 2 — split column and group labels
+    _hr()
+    split_col, yes_label, no_label = _step2_split_column(df)
+
+    # Step 3 — output
+    _hr()
+    title_suffix, out_dir, dpi = _step3_output_settings()
+
+    # Confirmation summary
+    yes_n = int((df[split_col] == "Yes").sum())
+    no_n  = int((df[split_col] == "No").sum())
+    est_time = max(1, round(12 * (dpi / 150) * 0.4))
+
+    _blank()
+    _hr(double=True)
+    print("  READY TO GENERATE — here is what will happen:")
+    _hr()
+    print(f"  Data file:       {os.path.basename(csv_path)}")
+    print(f"  Responses:       {len(df)} total respondents loaded")
+    print(f"  Comparison:      '{yes_label}'  (n={yes_n})  vs  '{no_label}'  (n={no_n})")
+    print(f"  Split column:    {split_col}  —  {COLUMN_DESCRIPTIONS.get(split_col, 'user-selected column')}")
+    print(f"  Title suffix:    {title_suffix or '(none)'}")
+    print(f"  Output folder:   {os.path.abspath(out_dir)}/")
+    print(f"  Resolution:      {dpi} DPI")
+    print(f"  Output:          1 PDF file  (cover page + 12 charts)")
+    print(f"  Est. run time:   ~{est_time} second(s)")
+    _hr(double=True)
+    _blank()
+
+    go = _ask("Generate all 12 charts now?  [Y/n]", default="Y").lower()
+    if go not in ("y", "yes", ""):
+        print("\n  Cancelled — no files were written.")
+        sys.exit(0)
+
+    return {
+        "df":           df,
+        "split_col":    split_col,
+        "yes_label":    yes_label,
+        "no_label":     no_label,
+        "title_suffix": title_suffix,
+        "out_dir":      out_dir,
+        "dpi":          dpi,
+    }
+
 
 # ---------------------------------------------------------------------------
 # Data loading & preparation
@@ -210,37 +702,28 @@ MULTI_SELECT_CHARTS = [
 
 def load_qualtrics(path: str) -> pd.DataFrame:
     """
-    Load a Qualtrics CSV that has 3 header rows:
-      row 0 — column codes  (used as column names)
-      row 1 — question text (skipped here; used only for reference)
-      row 2 — import IDs    (skipped)
-    Returns a clean DataFrame starting at the first real response row.
-    Drops the School column if present.
+    Load a Qualtrics CSV (3-row header: column codes / question text / import IDs).
+    Drops the School column automatically to protect anonymity.
     """
     df = pd.read_csv(path, skiprows=[1, 2], low_memory=False)
-    # Drop school column to protect anonymity during disaggregation
     if "School" in df.columns:
         df = df.drop(columns=["School"])
-    # Strip whitespace from string columns
-    for col in df.select_dtypes("object").columns:
+    for col in df.select_dtypes(include=["object", "string"]).columns:
         df[col] = df[col].str.strip()
     return df
 
 
 def normalise_likert(series: pd.Series) -> pd.Series:
-    return series.map(lambda v: LIKERT_NORM.get(str(v).lower().strip(), np.nan)
-                      if pd.notna(v) else np.nan)
+    return series.map(
+        lambda v: LIKERT_NORM.get(str(v).lower().strip(), np.nan) if pd.notna(v) else np.nan
+    )
 
 
 def split_groups(df: pd.DataFrame, col: str):
-    """Return (yes_df, no_df) split on col == 'Yes' / 'No'."""
-    yes = df[df[col] == "Yes"].copy()
-    no  = df[df[col] == "No"].copy()
-    return yes, no
+    return df[df[col] == "Yes"].copy(), df[df[col] == "No"].copy()
 
 
-def pct_counts(series: pd.Series) -> dict:
-    """Return {category: (count, pct)} for a normalised Likert series."""
+def pct_counts(series: pd.Series):
     total = series.dropna().shape[0]
     result = {}
     for cat in LIKERT_ORDER:
@@ -250,9 +733,7 @@ def pct_counts(series: pd.Series) -> dict:
 
 
 def explode_multiselect(series: pd.Series) -> pd.Series:
-    """Explode comma-separated multi-select cells into individual values."""
-    exploded = series.dropna().str.split(",").explode().str.strip()
-    return exploded
+    return series.dropna().str.split(",").explode().str.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -260,21 +741,11 @@ def explode_multiselect(series: pd.Series) -> pd.Series:
 # ---------------------------------------------------------------------------
 
 FONT_TITLE    = {"fontsize": 13, "fontweight": "bold", "color": "#1a1a2e"}
-FONT_SUBTITLE = {"fontsize": 9,  "color": "#555577", "style": "italic"}
-FONT_AXIS     = {"fontsize": 9,  "color": "#333333"}
-FONT_BAR      = {"fontsize": 7.5}
-
-GROUP_COLORS = {
-    "yes": "#1a5fa8",
-    "no":  "#888899",
-}
-
-STRIPE_ALPHA = 0.04   # background row striping
+FONT_SUBTITLE = {"fontsize": 9,  "color": "#555577",   "style": "italic"}
+GROUP_COLORS  = {"yes": "#1a5fa8", "no": "#888899"}
 
 
-def _add_metadata_footer(fig, yes_n: int, no_n: int,
-                          yes_label: str, no_label: str,
-                          title_suffix: str = ""):
+def _add_footer(fig, yes_n, no_n, yes_label, no_label, title_suffix=""):
     fig.text(
         0.5, 0.01,
         f"n={yes_label}: {yes_n}   |   n={no_label}: {no_n}"
@@ -284,155 +755,166 @@ def _add_metadata_footer(fig, yes_n: int, no_n: int,
     )
 
 
-def _legend_patches(yes_label: str, no_label: str) -> list:
-    return [
-        mpatches.Patch(facecolor=GROUP_COLORS["yes"], label=yes_label),
-        mpatches.Patch(facecolor=GROUP_COLORS["no"],  label=no_label),
+def save_to_pdf(fig, pdf):
+    """Save a figure as the next page in an open PdfPages object."""
+    pdf.savefig(fig, bbox_inches="tight", facecolor="white")
+    print("  saved")    # completes the "• Chart name … saved" line
+    plt.close(fig)
+
+
+def make_cover_page(yes_label, no_label, split_col, title_suffix,
+                    total_n, yes_n, no_n, dpi=150):
+    """Cover / table-of-contents page for the PDF report."""
+    import datetime
+    fig = plt.figure(figsize=(13, 8.5), dpi=dpi)
+    fig.patch.set_facecolor("white")
+
+    # Accent bar
+    bar_ax = fig.add_axes([0, 0.93, 1, 0.07])
+    bar_ax.set_facecolor("#1a1a2e")
+    bar_ax.set_axis_off()
+
+    ax = fig.add_axes([0.08, 0.08, 0.84, 0.82])
+    ax.set_axis_off()
+
+    title    = "Idaho High School Mathematics Survey"
+    subtitle = "Analysis Report" + (f"  —  {title_suffix}" if title_suffix else "")
+
+    ax.text(0.5, 0.95, title,
+            ha="center", va="top", fontsize=22, fontweight="bold",
+            color="#1a1a2e", transform=ax.transAxes)
+    ax.text(0.5, 0.86, subtitle,
+            ha="center", va="top", fontsize=14, color="#555577",
+            style="italic", transform=ax.transAxes)
+
+    ax.plot([0, 1], [0.80, 0.80], color="#cccccc", linewidth=1, transform=ax.transAxes)
+
+    summary_lines = [
+        f"Total respondents:    {total_n}",
+        "",
+        f'Group A  ·  "{yes_label}"    n = {yes_n}',
+        f'Group B  ·  "{no_label}"    n = {no_n}',
+        "",
+        f"Split column:   {split_col}   —   {COLUMN_DESCRIPTIONS.get(split_col, 'user-selected column')}",
+        f"Generated:      {datetime.datetime.now().strftime('%B %d, %Y  %H:%M')}",
     ]
+    for i, line in enumerate(summary_lines):
+        ax.text(0.12, 0.74 - i * 0.065, line,
+                ha="left", va="top", fontsize=11, color="#333333",
+                transform=ax.transAxes)
+
+    ax.plot([0, 1], [0.30, 0.30], color="#cccccc", linewidth=1, transform=ax.transAxes)
+
+    ax.text(0.12, 0.27, "Contents", ha="left", va="top", fontsize=11,
+            fontweight="bold", color="#1a1a2e", transform=ax.transAxes)
+    toc = [
+        "1–3    Likert Scale Constructs",
+        "         1.  Math Utility & Identity",
+        "         2.  Math Engagement & Interest",
+        "         3.  Math Competence Perception",
+        "4–8    Single-Choice Questions",
+        "         4.  Current Grade Level          5.  Current Math Class",
+        "         6.  Next Planned Course          7.  Badging Class Progress",
+        "         8.  Badge Awareness",
+        "9–12   Multi-Choice Questions",
+        "         9.  Post-Graduation Plans       10.  What Makes a Favourite Math Class",
+        "        11.  Sources of Math Difficulty  12.  Ideal Badge Uses (badging only)",
+        "13–17   Grade-Level Breakdown  (confound analysis)",
+        "        13.  Grade composition by group",
+        "        14.  Mean construct scores by grade",
+        "        15.  Math Utility & Identity by grade",
+        "        16.  Math Engagement & Interest by grade",
+        "        17.  Math Competence Perception by grade",
+    ]
+    for i, line in enumerate(toc):
+        ax.text(0.12, 0.21 - i * 0.048, line,
+                ha="left", va="top", fontsize=9.5, color="#444444",
+                transform=ax.transAxes)
+
+    fig.text(0.5, 0.02,
+             "Idaho Regional Mathematics Center  ·  Lewis-Clark State College  ·  Regions 1 & 2",
+             ha="center", fontsize=8, color="#aaaaaa")
+    return fig
 
 
 # ---------------------------------------------------------------------------
-# Diverging stacked bar chart (Likert constructs)
+# Chart renderers
 # ---------------------------------------------------------------------------
 
-def plot_diverging_construct(
-    yes_df: pd.DataFrame,
-    no_df:  pd.DataFrame,
-    construct: dict,
-    yes_label: str,
-    no_label:  str,
-    title_suffix: str = "",
-    dpi: int = 150,
-) -> plt.Figure:
-    """
-    Renders one diverging stacked bar panel for a single construct.
-    Each item gets TWO rows: one for yes_label, one for no_label.
-    The bars diverge from centre (negative categories left, positive right).
-    Percentage labels are printed inside each segment when wide enough.
-    """
-    items  = construct["items"]
+def plot_diverging_construct(yes_df, no_df, construct, yes_label, no_label,
+                              title_suffix="", dpi=150):
+    items   = construct["items"]
     n_items = len(items)
-    # Two rows per item (yes on top, no below), plus small gap between items
-    n_rows = n_items * 2
-
-    fig_h = max(3.5, 0.55 * n_rows + 2.0)
+    n_rows  = n_items * 2
+    fig_h   = max(3.5, 0.55 * n_rows + 2.0)
     fig, ax = plt.subplots(figsize=(13, fig_h), dpi=dpi)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
 
-    # Y positions: each item occupies 2 rows spaced by 1 unit; items separated by 0.4
     item_gap  = 0.35
     row_h     = 1.0
     bar_thick = 0.75
+    neg_cats  = ["Strongly Disagree", "Disagree", "Somewhat Disagree"]
+    pos_cats  = ["Somewhat Agree", "Agree", "Strongly Agree"]
 
-    y_ticks_label  = []  # centre of each item's pair, for item labels
-    y_ticks_group  = []  # individual bar centres, for Yes/No labels
-    y_group_labels = []
-
-    neg_cats = ["Strongly Disagree", "Disagree", "Somewhat Disagree"]
-    pos_cats = ["Somewhat Agree",    "Agree",     "Strongly Agree"]
+    y_ticks_label, y_ticks_group, y_group_labels = [], [], []
 
     def _bar_data(sub_df, col):
         ser = normalise_likert(sub_df[col])
-        counts, total = pct_counts(ser)
-        return counts, total
+        return pct_counts(ser)
 
     for i, (col, short_label) in enumerate(items):
-        # y positions: yes row on top, no row below
-        base = i * (2 * row_h + item_gap)
+        base  = i * (2 * row_h + item_gap)
         y_yes = base + row_h
         y_no  = base
-
-        item_centre = base + row_h / 2
-        y_ticks_label.append(item_centre)
-        y_ticks_group += [y_yes, y_no]
+        y_ticks_label.append(base + row_h / 2)
+        y_ticks_group  += [y_yes, y_no]
         y_group_labels += [yes_label, no_label]
 
-        # Alternating row background
         if i % 2 == 0:
-            ax.barh(
-                [y_yes, y_no], [200, 200], left=-100,
-                height=bar_thick + 0.05,
-                color="#f0f2f8", zorder=0, alpha=0.5,
-            )
+            ax.barh([y_yes, y_no], [200, 200], left=-100,
+                    height=bar_thick + 0.05, color="#f0f2f8", zorder=0, alpha=0.5)
 
-        for y, sub_df, g_key in [(y_yes, yes_df, "yes"), (y_no, no_df, "no")]:
+        for y, sub_df in [(y_yes, yes_df), (y_no, no_df)]:
             counts, total = _bar_data(sub_df, col)
             if total == 0:
                 continue
-
-            # Compute pivot: negative categories accumulate leftward from 0
-            neg_pcts = [counts[c][1] for c in neg_cats]
-            pos_pcts = [counts[c][1] for c in pos_cats]
-
-            # Draw negative bars (left of zero)
             left = 0.0
-            for cat, pct in zip(reversed(neg_cats), reversed(neg_pcts)):
+            for cat, pct in zip(reversed(neg_cats),
+                                 reversed([counts[c][1] for c in neg_cats])):
                 if pct > 0:
-                    ax.barh(
-                        y, -pct, left=left,
-                        height=bar_thick,
-                        color=LIKERT_COLORS[cat],
-                        edgecolor="white", linewidth=0.4,
-                        zorder=3,
-                    )
+                    ax.barh(y, -pct, left=left, height=bar_thick,
+                            color=LIKERT_COLORS[cat],
+                            edgecolor="white", linewidth=0.4, zorder=3)
                     if pct >= 5:
-                        ax.text(
-                            left - pct / 2, y,
-                            f"{pct:.0f}%",
-                            ha="center", va="center",
-                            color="white", fontsize=6.5, fontweight="bold",
-                            zorder=4,
-                        )
+                        ax.text(left - pct / 2, y, f"{pct:.0f}%",
+                                ha="center", va="center",
+                                color="white", fontsize=6.5, fontweight="bold", zorder=4)
                     left -= pct
-
-            # Draw positive bars (right of zero)
             left = 0.0
-            for cat, pct in zip(pos_cats, pos_pcts):
+            for cat, pct in zip(pos_cats, [counts[c][1] for c in pos_cats]):
                 if pct > 0:
-                    ax.barh(
-                        y, pct, left=left,
-                        height=bar_thick,
-                        color=LIKERT_COLORS[cat],
-                        edgecolor="white", linewidth=0.4,
-                        zorder=3,
-                    )
+                    ax.barh(y, pct, left=left, height=bar_thick,
+                            color=LIKERT_COLORS[cat],
+                            edgecolor="white", linewidth=0.4, zorder=3)
                     if pct >= 5:
-                        ax.text(
-                            left + pct / 2, y,
-                            f"{pct:.0f}%",
-                            ha="center", va="center",
-                            color="white", fontsize=6.5, fontweight="bold",
-                            zorder=4,
-                        )
+                        ax.text(left + pct / 2, y, f"{pct:.0f}%",
+                                ha="center", va="center",
+                                color="white", fontsize=6.5, fontweight="bold", zorder=4)
                     left += pct
 
-    # --- Axes formatting ---
     ax.axvline(0, color="#444455", linewidth=1.0, zorder=5)
-
-    total_span = max(
-        sum(counts[c][1] for c in neg_cats)
-        for col, _ in items
-        for counts, _ in [_bar_data(yes_df, col), _bar_data(no_df, col)]
-        if _ > 0
-    ) if items else 60
-    x_lim = max(70, total_span + 10)
-    ax.set_xlim(-x_lim, x_lim)
-
+    ax.set_xlim(-75, 75)
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{abs(v):.0f}%"))
     ax.tick_params(axis="x", labelsize=8, colors="#555555")
     ax.set_xlabel("← Disagree                Agree →", fontsize=8.5,
                   color="#444444", labelpad=6)
-
-    # Item labels on left y-axis
     ax.set_yticks(y_ticks_label)
     ax.set_yticklabels(
-        ["\n".join(textwrap.wrap(short, 34)) for _, short in items],
-        fontsize=8.5, color="#1a1a2e",
-    )
+        ["\n".join(textwrap.wrap(s, 34)) for _, s in items],
+        fontsize=8.5, color="#1a1a2e")
     ax.yaxis.set_tick_params(length=0)
 
-    # Secondary y-axis: Yes/No group labels on the right
     ax2 = ax.twinx()
     ax2.set_ylim(ax.get_ylim())
     ax2.set_yticks(y_ticks_group)
@@ -440,223 +922,154 @@ def plot_diverging_construct(
     ax2.yaxis.set_tick_params(length=0)
     ax2.set_ylabel("")
 
-    ax.spines[["top", "right", "left"]].set_visible(False)
+    for spine in ["top", "right", "left"]:
+        ax.spines[spine].set_visible(False)
     ax.spines["bottom"].set_color("#cccccc")
-    ax2.spines[["top", "left", "bottom"]].set_visible(False)
+    for spine in ["top", "left", "bottom"]:
+        ax2.spines[spine].set_visible(False)
     ax2.spines["right"].set_color("#cccccc")
 
-    # --- Likert legend ---
-    legend_patches = [
-        mpatches.Patch(facecolor=LIKERT_COLORS[c], label=c)
-        for c in LIKERT_ORDER
-    ]
-    ax.legend(
-        handles=legend_patches,
-        loc="lower center",
-        bbox_to_anchor=(0.5, -0.18 if n_items <= 5 else -0.14),
-        ncol=6,
-        fontsize=7.5,
-        frameon=False,
-        handlelength=1.2,
-    )
+    legend_patches = [mpatches.Patch(facecolor=LIKERT_COLORS[c], label=c)
+                      for c in LIKERT_ORDER]
+    ax.legend(handles=legend_patches, loc="lower center",
+              bbox_to_anchor=(0.5, -0.18 if n_items <= 5 else -0.14),
+              ncol=6, fontsize=7.5, frameon=False, handlelength=1.2)
 
-    # --- Title ---
-    title_text = construct["title"]
-    if title_suffix:
-        title_text += f" — {title_suffix}"
+    title_text = construct["title"] + (f" — {title_suffix}" if title_suffix else "")
     fig.suptitle(title_text, **FONT_TITLE, y=1.01)
     ax.set_title(construct["subtitle"], **FONT_SUBTITLE, pad=4)
-
-    _add_metadata_footer(fig, len(yes_df), len(no_df), yes_label, no_label)
+    _add_footer(fig, len(yes_df), len(no_df), yes_label, no_label, title_suffix)
     fig.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
 
 
-# ---------------------------------------------------------------------------
-# Single-select grouped horizontal bar chart
-# ---------------------------------------------------------------------------
-
-def plot_single_select(
-    yes_df: pd.DataFrame,
-    no_df:  pd.DataFrame,
-    q_def: dict,
-    yes_label: str,
-    no_label:  str,
-    title_suffix: str = "",
-    dpi: int = 150,
-) -> plt.Figure:
-    col     = q_def["key"]
-    order   = q_def.get("order", [])
+def plot_single_select(yes_df, no_df, q_def, yes_label, no_label,
+                        title_suffix="", dpi=150):
+    col          = q_def["key"]
+    order        = q_def.get("order", [])
     badging_only = q_def.get("badging_only", False)
 
-    # Build ordered frequency tables
     def freq(sub_df):
         vc = sub_df[col].value_counts()
         total = vc.sum()
-        result = {}
-        for cat in order:
-            n = int(vc.get(cat, 0))
-            result[cat] = (n, round(100 * n / total, 1) if total else 0.0)
-        # Catch any categories not in order
+        result = {cat: (int(vc.get(cat, 0)),
+                        round(100 * vc.get(cat, 0) / total, 1) if total else 0.0)
+                  for cat in order}
         for cat in vc.index:
             if cat not in result:
                 n = int(vc[cat])
                 result[cat] = (n, round(100 * n / total, 1) if total else 0.0)
-        return result, total
+        return result, int(total)
 
     yes_freq, yes_n = freq(yes_df)
     no_freq,  no_n  = freq(no_df)
+    all_cats = list(dict.fromkeys(
+        order + [c for c in list(yes_freq) + list(no_freq) if c not in order]))
+    all_cats = [c for c in all_cats
+                if yes_freq.get(c, (0,))[0] + no_freq.get(c, (0,))[0] > 0]
 
-    all_cats = list(dict.fromkeys(order + [c for c in (list(yes_freq) + list(no_freq)) if c not in order]))
-    # Remove categories with zero across both groups
-    all_cats = [c for c in all_cats if yes_freq.get(c, (0,))[0] + no_freq.get(c, (0,))[0] > 0]
-
-    n_cats = len(all_cats)
-    fig_h  = max(3.0, 0.5 * n_cats + 2.0)
+    fig_h = max(3.0, 0.5 * len(all_cats) + 2.0)
     fig, ax = plt.subplots(figsize=(10, fig_h), dpi=dpi)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
 
     bar_w  = 0.35
-    y_base = np.arange(n_cats)
-
+    y_base = np.arange(len(all_cats))
     groups = ([(yes_freq, GROUP_COLORS["yes"], yes_label, yes_n)]
               if badging_only
               else [(yes_freq, GROUP_COLORS["yes"], yes_label, yes_n),
                     (no_freq,  GROUP_COLORS["no"],  no_label,  no_n)])
-    n_grp  = len(groups)
 
     for g_idx, (freq_d, color, label, total) in enumerate(groups):
-        offset = (g_idx - (n_grp - 1) / 2) * bar_w
+        offset = (g_idx - (len(groups) - 1) / 2) * bar_w
         pcts   = [freq_d.get(c, (0, 0.0))[1] for c in all_cats]
         cnts   = [freq_d.get(c, (0, 0.0))[0] for c in all_cats]
-        bars   = ax.barh(y_base + offset, pcts, height=bar_w,
-                         color=color, alpha=0.88,
-                         edgecolor="white", linewidth=0.5,
+        bars   = ax.barh(y_base + offset, pcts, height=bar_w, color=color,
+                         alpha=0.88, edgecolor="white", linewidth=0.5,
                          label=label, zorder=3)
         for bar, pct, cnt in zip(bars, pcts, cnts):
             if pct > 0:
-                ax.text(
-                    pct + 0.8, bar.get_y() + bar.get_height() / 2,
-                    f"{pct:.0f}% (n={cnt})",
-                    va="center", ha="left",
-                    fontsize=7.5, color="#333333",
-                )
+                ax.text(pct + 0.8, bar.get_y() + bar.get_height() / 2,
+                        f"{pct:.0f}% (n={cnt})",
+                        va="center", ha="left", fontsize=7.5, color="#333333")
 
     ax.set_yticks(y_base)
-    ax.set_yticklabels(
-        ["\n".join(textwrap.wrap(c, 36)) for c in all_cats],
-        fontsize=8.5,
-    )
+    ax.set_yticklabels(["\n".join(textwrap.wrap(c, 36)) for c in all_cats],
+                       fontsize=8.5)
     ax.set_xlabel("Percentage of respondents", fontsize=8.5, color="#444444")
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}%"))
     ax.set_xlim(0, 105)
     ax.tick_params(axis="x", labelsize=8, colors="#555555")
-
     ax.spines[["top", "right"]].set_visible(False)
     ax.spines[["bottom", "left"]].set_color("#cccccc")
-
     if not badging_only:
         ax.legend(fontsize=8, frameon=False, loc="lower right")
 
-    title_text = q_def["title"]
-    if title_suffix:
-        title_text += f" — {title_suffix}"
+    title_text = q_def["title"] + (f" — {title_suffix}" if title_suffix else "")
     fig.suptitle(title_text, **FONT_TITLE, y=1.01)
     ax.set_title(q_def["subtitle"], **FONT_SUBTITLE, pad=4)
-
-    _add_metadata_footer(fig, yes_n, no_n if not badging_only else 0,
-                         yes_label, no_label)
+    _add_footer(fig, yes_n, no_n if not badging_only else 0, yes_label, no_label)
     fig.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
 
 
-# ---------------------------------------------------------------------------
-# Multi-select frequency chart
-# ---------------------------------------------------------------------------
-
-def plot_multi_select(
-    yes_df: pd.DataFrame,
-    no_df:  pd.DataFrame,
-    q_def: dict,
-    yes_label: str,
-    no_label:  str,
-    title_suffix: str = "",
-    dpi: int = 150,
-) -> plt.Figure:
+def plot_multi_select(yes_df, no_df, q_def, yes_label, no_label,
+                       title_suffix="", dpi=150):
     col          = q_def["key"]
     badging_only = q_def.get("badging_only", False)
 
     def freq(sub_df):
         total = sub_df[col].notna().sum()
-        exploded = explode_multiselect(sub_df[col])
-        vc = exploded.value_counts()
-        return vc, total
+        vc    = explode_multiselect(sub_df[col]).value_counts()
+        return vc, int(total)
 
     yes_vc, yes_n = freq(yes_df)
     no_vc,  no_n  = freq(no_df)
-
-    # Union of categories, sorted by yes frequency descending
     all_cats = list(dict.fromkeys(
-        list(yes_vc.index) + [c for c in no_vc.index if c not in yes_vc.index]
-    ))
+        list(yes_vc.index) + [c for c in no_vc.index if c not in yes_vc.index]))
 
-    n_cats = len(all_cats)
-    fig_h  = max(3.5, 0.52 * n_cats + 2.2)
+    fig_h = max(3.5, 0.52 * len(all_cats) + 2.2)
     fig, ax = plt.subplots(figsize=(11, fig_h), dpi=dpi)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
 
     bar_w  = 0.36
-    y_base = np.arange(n_cats)
-
+    y_base = np.arange(len(all_cats))
     groups = ([(yes_vc, yes_n, GROUP_COLORS["yes"], yes_label)]
               if badging_only
               else [(yes_vc, yes_n, GROUP_COLORS["yes"], yes_label),
                     (no_vc,  no_n,  GROUP_COLORS["no"],  no_label)])
-    n_grp  = len(groups)
 
     for g_idx, (vc, total, color, label) in enumerate(groups):
-        offset = (g_idx - (n_grp - 1) / 2) * bar_w
+        offset = (g_idx - (len(groups) - 1) / 2) * bar_w
         pcts   = [round(100 * vc.get(c, 0) / total, 1) if total else 0 for c in all_cats]
         cnts   = [int(vc.get(c, 0)) for c in all_cats]
-        bars   = ax.barh(y_base + offset, pcts, height=bar_w,
-                         color=color, alpha=0.88,
-                         edgecolor="white", linewidth=0.5,
+        bars   = ax.barh(y_base + offset, pcts, height=bar_w, color=color,
+                         alpha=0.88, edgecolor="white", linewidth=0.5,
                          label=label, zorder=3)
         for bar, pct, cnt in zip(bars, pcts, cnts):
             if pct > 0:
-                ax.text(
-                    pct + 0.8, bar.get_y() + bar.get_height() / 2,
-                    f"{pct:.0f}% (n={cnt})",
-                    va="center", ha="left",
-                    fontsize=7.5, color="#333333",
-                )
+                ax.text(pct + 0.8, bar.get_y() + bar.get_height() / 2,
+                        f"{pct:.0f}% (n={cnt})",
+                        va="center", ha="left", fontsize=7.5, color="#333333")
 
     ax.set_yticks(y_base)
-    ax.set_yticklabels(
-        ["\n".join(textwrap.wrap(c, 40)) for c in all_cats],
-        fontsize=8.2,
-    )
-    ax.set_xlabel("% of respondents who selected this option", fontsize=8.5, color="#444444")
+    ax.set_yticklabels(["\n".join(textwrap.wrap(c, 40)) for c in all_cats],
+                       fontsize=8.2)
+    ax.set_xlabel("% of respondents who selected this option",
+                  fontsize=8.5, color="#444444")
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}%"))
     ax.set_xlim(0, 110)
     ax.tick_params(axis="x", labelsize=8, colors="#555555")
-
     ax.spines[["top", "right"]].set_visible(False)
     ax.spines[["bottom", "left"]].set_color("#cccccc")
-
     if not badging_only:
         ax.legend(fontsize=8.5, frameon=False, loc="lower right")
 
-    title_text = q_def["title"]
-    if title_suffix:
-        title_text += f" — {title_suffix}"
+    title_text = q_def["title"] + (f" — {title_suffix}" if title_suffix else "")
     fig.suptitle(title_text, **FONT_TITLE, y=1.01)
     ax.set_title(q_def["subtitle"], **FONT_SUBTITLE, pad=4)
-
-    _add_metadata_footer(fig, yes_n, no_n if not badging_only else 0,
-                         yes_label, no_label)
+    _add_footer(fig, yes_n, no_n if not badging_only else 0, yes_label, no_label)
     fig.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
 
@@ -665,86 +1078,508 @@ def plot_multi_select(
 # Main
 # ---------------------------------------------------------------------------
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        description="Idaho Math Badging Survey — diverging bar chart visualizer",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    p.add_argument("input_csv", help="Path to the Qualtrics CSV file")
-    p.add_argument("--split-col",  default="B_1",        help="Column to split on (default: B_1)")
-    p.add_argument("--yes-label",  default="Math Badging", help="Label for Yes group")
-    p.add_argument("--no-label",   default="Non-Badging",  help="Label for No group")
-    p.add_argument("--out-dir",    default="output",      help="Output directory for PNGs")
-    p.add_argument("--no-save",    action="store_true",   help="Show charts interactively")
-    p.add_argument("--dpi",        type=int, default=150, help="PNG resolution (default 150)")
-    p.add_argument("--title",      default="",            help="Optional title suffix on each chart")
-    return p
+# Grade-level breakdown charts
+# ---------------------------------------------------------------------------
+
+GRADE_ORDER = ["9th", "10th", "11th", "12th"]
+
+LIKERT_NUMERIC = {
+    "strongly disagree": 1,
+    "disagree":          2,
+    "somewhat disagree": 3,
+    "somewhat agree":    4,
+    "agree":             5,
+    "strongly agree":    6,
+}
+
+CONSTRUCT_COLS = {
+    "MUI": ["MUI_1_1", "MUI_1_2", "MUI_1_3", "MUI_1_4"],
+    "MEI": ["MEI_1_1", "MEI_1_7", "MEI_1_8", "MEI_1_9"],
+    "MCP": ["MCP_1_1", "MCP_1_12", "MCP_1_13", "MCP_1_14", "MCP_1_15",
+            "MCP_2_1", "MCP_2_12", "MCP_2_13", "MCP_2_14"],
+}
+
+CONSTRUCT_LABELS = {
+    "MUI": "Math Utility & Identity",
+    "MEI": "Math Engagement & Interest",
+    "MCP": "Math Competence Perception",
+}
+
+MIN_N_LABEL = 5   # cells below this get a small-n warning marker
 
 
-def save_or_show(fig: plt.Figure, name: str, out_dir: str,
-                 no_save: bool, dpi: int):
-    if no_save:
-        plt.show()
-    else:
-        os.makedirs(out_dir, exist_ok=True)
-        path = os.path.join(out_dir, f"{name}.png")
-        fig.savefig(path, dpi=dpi, bbox_inches="tight", facecolor="white")
-        print(f"  Saved → {path}")
-    plt.close(fig)
+def _numeric_scores(df):
+    """Add numeric Likert columns and construct mean columns to a copy of df."""
+    d = df.copy()
+    for key, cols in CONSTRUCT_COLS.items():
+        num_cols = []
+        for col in cols:
+            if col not in d.columns:
+                continue
+            nc = col + "_num"
+            d[nc] = d[col].str.lower().str.strip().map(LIKERT_NUMERIC)
+            num_cols.append(nc)
+        if num_cols:
+            d[key + "_mean"] = d[num_cols].mean(axis=1)
+    return d
+
+
+def plot_grade_composition(df, yes_label, no_label, split_col,
+                            title_suffix="", dpi=150):
+    """
+    Stacked horizontal bar showing grade composition of each group.
+    Makes the confounding variable visible at a glance.
+    """
+    grade_colors = {
+        "9th":  "#4e79a7",
+        "10th": "#f28e2b",
+        "11th": "#59a14f",
+        "12th": "#e15759",
+    }
+
+    groups      = [yes_label, no_label]
+    group_dfs   = {
+        yes_label: df[df[split_col] == "Yes"],
+        no_label:  df[df[split_col] == "No"],
+    }
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 3.5), dpi=dpi)
+    fig.patch.set_facecolor("white")
+
+    for ax, grp_name in zip(axes, groups):
+        sub   = group_dfs[grp_name]
+        total = len(sub)
+        ax.set_facecolor("white")
+
+        left = 0.0
+        for grade in GRADE_ORDER:
+            n   = int((sub["DE_Grade"] == grade).sum())
+            pct = round(100 * n / total, 1) if total else 0
+            if pct == 0:
+                continue
+            bar = ax.barh(0, pct, left=left, height=0.5,
+                          color=grade_colors.get(grade, "#aaaaaa"),
+                          edgecolor="white", linewidth=0.8)
+            if pct >= 8:
+                ax.text(left + pct / 2, 0,
+                        f"{grade}\n{pct:.0f}%\n(n={n})",
+                        ha="center", va="center",
+                        fontsize=8.5, color="white", fontweight="bold")
+            left += pct
+
+        ax.set_xlim(0, 100)
+        ax.set_ylim(-0.6, 0.6)
+        ax.set_yticks([])
+        ax.set_xlabel("Percentage of group", fontsize=9, color="#444444")
+        ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}%"))
+        ax.tick_params(axis="x", labelsize=8, colors="#555555")
+        ax.spines[["top", "left", "right"]].set_visible(False)
+        ax.spines["bottom"].set_color("#cccccc")
+        ax.set_title(f"{grp_name}  (n={total})",
+                     fontsize=11, fontweight="bold", color="#1a1a2e", pad=8)
+
+    # Legend
+    patches = [mpatches.Patch(color=grade_colors[g], label=g)
+               for g in GRADE_ORDER if g in grade_colors]
+    fig.legend(handles=patches, loc="lower center", ncol=4,
+               fontsize=9, frameon=False, bbox_to_anchor=(0.5, -0.08))
+
+    title_text = "Grade-Level Composition by Group"
+    if title_suffix:
+        title_text += f"  —  {title_suffix}"
+    fig.suptitle(title_text, fontsize=13, fontweight="bold",
+                 color="#1a1a2e", y=1.04)
+    fig.text(0.5, 0.96,
+             "Shows whether the two groups differ in grade-level composition "
+             "(a potential confounding variable)",
+             ha="center", fontsize=9, color="#555577", style="italic")
+
+    fig.tight_layout(rect=[0, 0.06, 1, 1])
+    return fig
+
+
+def plot_grade_construct_means(df, split_col, yes_label, no_label,
+                                title_suffix="", dpi=150):
+    """
+    Dot plot: mean construct score (1–6) by grade, with separate markers
+    for Yes and No groups. Includes small-n warning where n < MIN_N_LABEL.
+    One panel per construct (MUI, MEI, MCP) stacked vertically.
+    """
+    d = _numeric_scores(df)
+    grades = [g for g in GRADE_ORDER if g in d["DE_Grade"].values]
+
+    n_constructs = len(CONSTRUCT_COLS)
+    fig, axes = plt.subplots(n_constructs, 1,
+                              figsize=(11, 3.2 * n_constructs), dpi=dpi,
+                              sharex=True)
+    fig.patch.set_facecolor("white")
+
+    x_pos = {g: i for i, g in enumerate(grades)}
+
+    for ax, (key, cols) in zip(axes, CONSTRUCT_COLS.items()):
+        ax.set_facecolor("white")
+        mean_col = key + "_mean"
+
+        for grp_val, grp_label, color, marker in [
+            ("Yes", yes_label, GROUP_COLORS["yes"], "o"),
+            ("No",  no_label,  GROUP_COLORS["no"],  "s"),
+        ]:
+            sub = d[d[split_col] == grp_val]
+            xs, ys, ns = [], [], []
+            for grade in grades:
+                g_sub = sub[sub["DE_Grade"] == grade][mean_col].dropna()
+                n     = len(g_sub)
+                if n == 0:
+                    continue
+                xs.append(x_pos[grade])
+                ys.append(g_sub.mean())
+                ns.append(n)
+
+            if not xs:
+                continue
+
+            ax.plot(xs, ys, color=color, linewidth=1.4,
+                    linestyle="--", alpha=0.5, zorder=2)
+            ax.scatter(xs, ys, color=color, marker=marker, s=80,
+                       zorder=3, label=f"{grp_label}")
+
+            for x, y, n in zip(xs, ys, ns):
+                va   = "bottom" if grp_val == "Yes" else "top"
+                off  = 0.06  if grp_val == "Yes" else -0.06
+                warn = f"*" if n < MIN_N_LABEL else ""
+                ax.text(x, y + off, f"{y:.2f}{warn}  n={n}",
+                        ha="center", va=va, fontsize=7.5,
+                        color=color)
+
+        ax.set_ylim(1, 6.3)
+        ax.set_yticks([1, 2, 3, 4, 5, 6])
+        ax.set_yticklabels(
+            ["1\nStr. Disagree", "2", "3", "4", "5", "6\nStr. Agree"],
+            fontsize=7.5, color="#555555")
+        ax.yaxis.grid(True, color="#eeeeee", linewidth=0.8, zorder=0)
+        ax.set_axisbelow(True)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.spines[["bottom", "left"]].set_color("#cccccc")
+        ax.set_ylabel(CONSTRUCT_LABELS[key], fontsize=9,
+                      color="#1a1a2e", fontweight="bold")
+
+    axes[-1].set_xticks(list(x_pos.values()))
+    axes[-1].set_xticklabels(grades, fontsize=10, color="#333333")
+    axes[-1].set_xlabel("Grade Level", fontsize=10, color="#444444")
+
+    # Shared legend
+    handles = [
+        mpatches.Patch(color=GROUP_COLORS["yes"], label=yes_label),
+        mpatches.Patch(color=GROUP_COLORS["no"],  label=no_label),
+    ]
+    axes[0].legend(handles=handles, fontsize=9, frameon=False,
+                   loc="upper right")
+
+    title_text = "Mean Construct Scores by Grade Level"
+    if title_suffix:
+        title_text += f"  —  {title_suffix}"
+    fig.suptitle(title_text, fontsize=13, fontweight="bold",
+                 color="#1a1a2e", y=1.01)
+    fig.text(0.5, 0.995,
+             "Scale 1–6 (Strongly Disagree → Strongly Agree)  ·  "
+             f"* = small sample (n < {MIN_N_LABEL}), interpret with caution",
+             ha="center", fontsize=8.5, color="#555577", style="italic")
+
+    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    return fig
+
+
+def plot_grade_likert_construct(df, construct, grade_col="DE_Grade",
+                                 title_suffix="", dpi=150):
+    """
+    Diverging stacked bar chart for ONE construct, with one row per grade
+    (pooling all students regardless of badging group).
+    Useful for seeing grade-level trends independently of the split.
+    """
+    grades  = [g for g in GRADE_ORDER if g in df[grade_col].dropna().values]
+    n_grades = len(grades)
+    items    = construct["items"]
+    n_items  = len(items)
+
+    fig_h = max(3.5, 0.6 * n_grades * n_items + 1.8)
+    fig, ax = plt.subplots(figsize=(13, fig_h), dpi=dpi)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    item_gap  = 0.4
+    row_h     = 1.0
+    bar_thick = 0.72
+    neg_cats  = ["Strongly Disagree", "Disagree", "Somewhat Disagree"]
+    pos_cats  = ["Somewhat Agree", "Agree", "Strongly Agree"]
+
+    # Grade palette
+    grade_base_colors = {
+        "9th":  "#4e79a7",
+        "10th": "#f28e2b",
+        "11th": "#59a14f",
+        "12th": "#e15759",
+    }
+
+    y_ticks_label  = []
+    y_ticks_grade  = []
+    y_grade_labels = []
+
+    for i, (col, short_label) in enumerate(items):
+        base = i * (n_grades * row_h + item_gap)
+        y_ticks_label.append(base + (n_grades * row_h) / 2)
+
+        for j, grade in enumerate(grades):
+            y = base + j * row_h
+            y_ticks_grade.append(y)
+            sub   = df[df[grade_col] == grade]
+            n     = sub[col].dropna().shape[0]
+            y_grade_labels.append(f"{grade}  (n={n})")
+
+            ser    = normalise_likert(sub[col])
+            counts, total = pct_counts(ser)
+            if total == 0:
+                continue
+
+            color = grade_base_colors.get(grade, "#888888")
+
+            # Draw negative bars
+            left = 0.0
+            for cat, pct in zip(
+                reversed(neg_cats),
+                reversed([counts[c][1] for c in neg_cats])
+            ):
+                if pct > 0:
+                    # Desaturate toward red for negative
+                    ax.barh(y, -pct, left=left, height=bar_thick,
+                            color=LIKERT_COLORS[cat],
+                            edgecolor="white", linewidth=0.4, zorder=3)
+                    if pct >= 6:
+                        ax.text(left - pct / 2, y, f"{pct:.0f}%",
+                                ha="center", va="center",
+                                color="white", fontsize=6, fontweight="bold",
+                                zorder=4)
+                    left -= pct
+
+            # Draw positive bars
+            left = 0.0
+            for cat, pct in zip(pos_cats, [counts[c][1] for c in pos_cats]):
+                if pct > 0:
+                    ax.barh(y, pct, left=left, height=bar_thick,
+                            color=LIKERT_COLORS[cat],
+                            edgecolor="white", linewidth=0.4, zorder=3)
+                    if pct >= 6:
+                        ax.text(left + pct / 2, y, f"{pct:.0f}%",
+                                ha="center", va="center",
+                                color="white", fontsize=6, fontweight="bold",
+                                zorder=4)
+                    left += pct
+
+            # Small-n marker
+            if n < MIN_N_LABEL:
+                ax.text(72, y, f"* n={n}", ha="left", va="center",
+                        fontsize=7, color="#cc4444", style="italic")
+
+        # Row stripe
+        if i % 2 == 0:
+            stripe_y = base - item_gap / 2
+            ax.barh(
+                [base + j * row_h for j in range(n_grades)],
+                [200] * n_grades, left=-100,
+                height=bar_thick + 0.05,
+                color="#f0f2f8", zorder=0, alpha=0.4,
+            )
+
+    ax.axvline(0, color="#444455", linewidth=1.0, zorder=5)
+    ax.set_xlim(-75, 75)
+    ax.xaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda v, _: f"{abs(v):.0f}%"))
+    ax.tick_params(axis="x", labelsize=8, colors="#555555")
+    ax.set_xlabel("← Disagree                Agree →",
+                  fontsize=8.5, color="#444444", labelpad=6)
+
+    ax.set_yticks(y_ticks_label)
+    ax.set_yticklabels(
+        ["\n".join(textwrap.wrap(s, 34)) for _, s in items],
+        fontsize=8.5, color="#1a1a2e")
+    ax.yaxis.set_tick_params(length=0)
+
+    ax2 = ax.twinx()
+    ax2.set_ylim(ax.get_ylim())
+    ax2.set_yticks(y_ticks_grade)
+    ax2.set_yticklabels(y_grade_labels, fontsize=7.5, color="#555577")
+    ax2.yaxis.set_tick_params(length=0)
+    ax2.set_ylabel("")
+
+    for spine in ["top", "right", "left"]:
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_color("#cccccc")
+    for spine in ["top", "left", "bottom"]:
+        ax2.spines[spine].set_visible(False)
+    ax2.spines["right"].set_color("#cccccc")
+
+    legend_patches = [mpatches.Patch(facecolor=LIKERT_COLORS[c], label=c)
+                      for c in LIKERT_ORDER]
+    ax.legend(handles=legend_patches, loc="lower center",
+              bbox_to_anchor=(0.5, -0.18 if n_items <= 4 else -0.12),
+              ncol=6, fontsize=7.5, frameon=False, handlelength=1.2)
+
+    title_text = construct["title"] + " — By Grade Level (All Students)"
+    if title_suffix:
+        title_text += f"  |  {title_suffix}"
+    fig.suptitle(title_text, fontsize=13, fontweight="bold",
+                 color="#1a1a2e", y=1.01)
+    ax.set_title(
+        construct["subtitle"] + "  ·  pooled across both groups — "
+        f"* = small sample (n < {MIN_N_LABEL}), interpret with caution",
+        fontsize=8.5, color="#555577", style="italic", pad=4)
+
+    n_total = df["DE_Grade"].notna().sum()
+    fig.text(0.5, 0.01, f"All students combined  |  n={n_total}",
+             ha="center", fontsize=7.5, color="#777777")
+
+    fig.tight_layout(rect=[0, 0.04, 1, 1])
+    return fig
+
 
 
 def main():
-    args = build_parser().parse_args()
+    from matplotlib.backends.backend_pdf import PdfPages
 
-    print(f"\nLoading: {args.input_csv}")
-    df = load_qualtrics(args.input_csv)
-    print(f"  {len(df)} responses loaded")
+    preselected = sys.argv[1] if len(sys.argv) > 1 else None
+    cfg = run_wizard(preselected)
 
-    yes_df, no_df = split_groups(df, args.split_col)
-    print(f"  {args.yes_label}: n={len(yes_df)}   {args.no_label}: n={len(no_df)}\n")
-
+    df            = cfg["df"]
+    yes_df, no_df = split_groups(df, cfg["split_col"])
     kw = dict(
-        yes_label=args.yes_label,
-        no_label=args.no_label,
-        title_suffix=args.title,
-        dpi=args.dpi,
+        yes_label    = cfg["yes_label"],
+        no_label     = cfg["no_label"],
+        title_suffix = cfg["title_suffix"],
+        dpi          = cfg["dpi"],
     )
+    out_dir  = cfg["out_dir"]
+    skipped  = []
+    n_saved  = 0
 
-    # 1. Diverging Likert constructs
-    print("── Likert constructs ──────────────────────────────────")
-    for construct in CONSTRUCTS:
-        print(f"  Rendering: {construct['title']}")
-        fig = plot_diverging_construct(yes_df, no_df, construct, **kw)
-        save_or_show(fig, f"likert_{construct['key'].lower()}", args.out_dir,
-                     args.no_save, args.dpi)
+    # Build output file path
+    os.makedirs(out_dir, exist_ok=True)
+    safe_suffix = cfg["title_suffix"].replace(" ", "_").replace("/", "-") if cfg["title_suffix"] else ""
+    pdf_name    = f"survey_analysis{'_' + safe_suffix if safe_suffix else ''}.pdf"
+    pdf_path    = os.path.join(out_dir, pdf_name)
 
-    # 2. Single-select questions
-    print("\n── Single-select questions ────────────────────────────")
-    for q_def in SINGLE_SELECT:
-        col = q_def["key"]
-        if col not in df.columns:
-            print(f"  Skipping {col} — not in data")
-            continue
-        print(f"  Rendering: {q_def['title']}")
-        fig = plot_single_select(yes_df, no_df, q_def, **kw)
-        save_or_show(fig, f"single_{col.lower()}", args.out_dir,
-                     args.no_save, args.dpi)
+    _blank()
+    _hr(double=True)
+    print(f"  Generating PDF report …")
+    print(f"  Output: {os.path.abspath(pdf_path)}")
+    _hr()
 
-    # 3. Multi-select questions
-    print("\n── Multi-select questions ─────────────────────────────")
-    for q_def in MULTI_SELECT_CHARTS:
-        col = q_def["key"]
-        if col not in df.columns:
-            print(f"  Skipping {col} — not in data")
-            continue
-        print(f"  Rendering: {q_def['title']}")
-        fig = plot_multi_select(yes_df, no_df, q_def, **kw)
-        save_or_show(fig, f"multi_{col.lower()}", args.out_dir,
-                     args.no_save, args.dpi)
+    yes_n = int((df[cfg["split_col"]] == "Yes").sum())
+    no_n  = int((df[cfg["split_col"]] == "No").sum())
 
-    print(f"\n✓ Done — {0 if args.no_save else 'charts saved to'} {'' if args.no_save else args.out_dir}\n")
+    with PdfPages(pdf_path) as pdf:
+
+        # Cover page
+        print(f"    • Cover page …", end="", flush=True)
+        cover = make_cover_page(
+            yes_label    = cfg["yes_label"],
+            no_label     = cfg["no_label"],
+            split_col    = cfg["split_col"],
+            title_suffix = cfg["title_suffix"],
+            total_n      = len(df),
+            yes_n        = yes_n,
+            no_n         = no_n,
+            dpi          = cfg["dpi"],
+        )
+        save_to_pdf(cover, pdf)
+
+        # Likert constructs
+        _blank()
+        print("  Likert scale constructs  (diverging bar charts):")
+        for construct in CONSTRUCTS:
+            print(f"    • {construct['title']} …", end="", flush=True)
+            fig = plot_diverging_construct(yes_df, no_df, construct, **kw)
+            save_to_pdf(fig, pdf)
+            n_saved += 1
+
+        # Single-select
+        _blank()
+        print("  Single-choice questions  (grouped bar charts):")
+        for q_def in SINGLE_SELECT:
+            if q_def["key"] not in df.columns:
+                print(f"    – {q_def['title']} … skipped (column {q_def['key']} not in data)")
+                skipped.append(q_def["key"])
+                continue
+            print(f"    • {q_def['title']} …", end="", flush=True)
+            fig = plot_single_select(yes_df, no_df, q_def, **kw)
+            save_to_pdf(fig, pdf)
+            n_saved += 1
+
+        # Multi-select
+        _blank()
+        print("  Multi-choice questions  (frequency bar charts):")
+        for q_def in MULTI_SELECT_CHARTS:
+            if q_def["key"] not in df.columns:
+                print(f"    – {q_def['title']} … skipped (column {q_def['key']} not in data)")
+                skipped.append(q_def["key"])
+                continue
+            print(f"    • {q_def['title']} …", end="", flush=True)
+            fig = plot_multi_select(yes_df, no_df, q_def, **kw)
+            save_to_pdf(fig, pdf)
+            n_saved += 1
+
+        # Grade-level breakdown section
+        _blank()
+        print("  Grade-level breakdown  (confound analysis):")
+
+        print(f"    • Grade composition by group …", end="", flush=True)
+        fig = plot_grade_composition(df, cfg["yes_label"], cfg["no_label"],
+                                     cfg["split_col"], cfg["title_suffix"], cfg["dpi"])
+        save_to_pdf(fig, pdf)
+        n_saved += 1
+
+        print(f"    • Mean construct scores by grade …", end="", flush=True)
+        fig = plot_grade_construct_means(df, cfg["split_col"],
+                                         cfg["yes_label"], cfg["no_label"],
+                                         cfg["title_suffix"], cfg["dpi"])
+        save_to_pdf(fig, pdf)
+        n_saved += 1
+
+        for construct in CONSTRUCTS:
+            print(f"    • {construct['title']} by grade …", end="", flush=True)
+            fig = plot_grade_likert_construct(df, construct,
+                                              title_suffix=cfg["title_suffix"],
+                                              dpi=cfg["dpi"])
+            save_to_pdf(fig, pdf)
+            n_saved += 1
+
+        # PDF metadata
+        info = pdf.infodict()
+        info["Title"]   = "Idaho High School Mathematics Survey — Analysis Report"
+        info["Author"]  = "Idaho Regional Mathematics Center, LCSC"
+        info["Subject"] = cfg["title_suffix"] or "Survey Analysis"
+
+    abs_path = os.path.abspath(pdf_path)
+    _blank()
+    _hr(double=True)
+    print(f"  ✓  All done!  {n_saved} charts + cover page written to one PDF.")
+    _hr()
+    print(f"  File:  {abs_path}")
+    if skipped:
+        _blank()
+        print(f"  Skipped ({len(skipped)} columns not found in this dataset):")
+        for s in skipped:
+            print(f"    {s}")
+    _hr(double=True)
+    _blank()
+    print("  To open the PDF:")
+    print("    Windows:  press  Win + E  and navigate to the location above,")
+    print("              or copy the path and paste it into the Explorer address bar.")
+    print("    Mac:      open Finder, press  Cmd + Shift + G,  paste the path above.")
+    _blank()
 
 
 if __name__ == "__main__":
     main()
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
