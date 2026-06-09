@@ -1287,14 +1287,15 @@ def plot_grade_construct_means(df, split_col, yes_label, no_label,
     title_text = "Mean Construct Scores by Grade Level"
     if title_suffix:
         title_text += f"  —  {title_suffix}"
+
+    # Reserve top margin so title and subtitle don't overlap
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
     fig.suptitle(title_text, fontsize=13, fontweight="bold",
-                 color="#1a1a2e", y=1.01)
-    fig.text(0.5, 0.995,
+                 color="#1a1a2e", y=0.98)
+    fig.text(0.5, 0.945,
              "Scale 1–6 (Strongly Disagree → Strongly Agree)  ·  "
              f"* = small sample (n < {MIN_N_LABEL}), interpret with caution",
              ha="center", fontsize=8.5, color="#555577", style="italic")
-
-    fig.tight_layout(rect=[0, 0, 1, 0.98])
     return fig
 
 
@@ -1435,18 +1436,26 @@ def plot_grade_likert_construct(df, construct, grade_col="DE_Grade",
     title_text = construct["title"] + " — By Grade Level (All Students)"
     if title_suffix:
         title_text += f"  |  {title_suffix}"
+
+    # right=0.82 leaves room for the grade labels on the twin axis;
+    # top=0.91 gives the title + subtitle space without overlapping.
+    fig.tight_layout(rect=[0, 0.05, 0.82, 0.91])
+    fig.subplots_adjust(right=0.82, top=0.91)
+
     fig.suptitle(title_text, fontsize=13, fontweight="bold",
-                 color="#1a1a2e", y=1.01)
-    ax.set_title(
-        construct["subtitle"] + "  ·  pooled across both groups — "
-        f"* = small sample (n < {MIN_N_LABEL}), interpret with caution",
-        fontsize=8.5, color="#555577", style="italic", pad=4)
+                 color="#1a1a2e", y=0.975)
+    # Split subtitle across two short lines so it never overlaps title
+    fig.text(0.5, 0.935,
+             construct["subtitle"],
+             ha="center", fontsize=8.5, color="#555577", style="italic")
+    fig.text(0.5, 0.910,
+             f"Pooled across both groups  ·  * = small sample (n < {MIN_N_LABEL}), interpret with caution",
+             ha="center", fontsize=8, color="#888888", style="italic")
 
     n_total = df["DE_Grade"].notna().sum()
     fig.text(0.5, 0.01, f"All students combined  |  n={n_total}",
              ha="center", fontsize=7.5, color="#777777")
 
-    fig.tight_layout(rect=[0, 0.04, 1, 1])
     return fig
 
 
