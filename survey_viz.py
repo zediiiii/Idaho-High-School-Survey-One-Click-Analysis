@@ -16,11 +16,20 @@ import glob
 import textwrap
 from pathlib import Path
 
+# Use the non-interactive Agg backend so matplotlib never tries to open
+# a GUI window regardless of how the script is launched on Windows.
+import matplotlib
+matplotlib.use('Agg')
+
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
+
+# Always resolve paths relative to the script's own folder,
+# not wherever the user's terminal happens to be open.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ---------------------------------------------------------------------------
 # Survey structure definition
@@ -235,14 +244,14 @@ def _ok(msg: str):
 
 def _find_csv_files() -> list[str]:
     """CSVs in the current working directory, newest first."""
-    files = glob.glob("*.csv")
+    files = glob.glob(os.path.join(SCRIPT_DIR, "*.csv"))
     files.sort(key=os.path.getmtime, reverse=True)
     return files
 
 
 def _find_zip_files() -> list[str]:
     """ZIP files in the current working directory."""
-    files = glob.glob("*.zip")
+    files = glob.glob(os.path.join(SCRIPT_DIR, "*.zip"))
     files.sort(key=os.path.getmtime, reverse=True)
     return files
 
@@ -358,7 +367,7 @@ def _step1_select_file(preselected: str | None) -> tuple[str, "pd.DataFrame"]:
             "       5. If it's a ZIP: extract it (right-click → Extract All on Windows;\n"
             "          double-click on Mac).\n"
             "       6. Move the .csv file into this folder:\n"
-            f"          {os.path.abspath('.')}\n"
+            f"          {SCRIPT_DIR}\n"
             "       7. Run this program again."
         )
         _blank()
@@ -1460,7 +1469,9 @@ def main():
     skipped  = []
     n_saved  = 0
 
-    # Build output file path
+    # Build output file path — resolve relative to script folder, not terminal cwd
+    if not os.path.isabs(out_dir):
+        out_dir = os.path.join(SCRIPT_DIR, out_dir)
     os.makedirs(out_dir, exist_ok=True)
     safe_suffix = cfg["title_suffix"].replace(" ", "_").replace("/", "-") if cfg["title_suffix"] else ""
     pdf_name    = f"survey_analysis{'_' + safe_suffix if safe_suffix else ''}.pdf"
