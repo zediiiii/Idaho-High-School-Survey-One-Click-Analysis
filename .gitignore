@@ -1,0 +1,32 @@
+# ── Data files — NEVER commit these ──────────────────────────────────────────
+# Raw survey exports
+*.csv
+*.xlsx
+*.xls
+*.tsv
+
+# Output charts (generated locally; not part of the codebase)
+output/
+outputs/
+*.png
+*.pdf
+
+# ── Python environment ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+.env
+
+# ── OS clutter ────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor files ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
