@@ -1,7 +1,10 @@
 # Idaho High School Survey One-Click Analysis
 
 Turn a raw Qualtrics survey export into a full set of publication-ready charts
-in a single terminal command — no programming experience required.
+in a single terminal command — no programming experience required. 
+
+**Disclaimer**
+No data crosses the program barrier or is uploaded to the cloud as a result of running this program -- everything is 100% compliant with the requirements of the approved IRB at LC-State 
 
 ---
 
