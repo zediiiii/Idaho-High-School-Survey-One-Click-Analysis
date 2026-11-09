@@ -4,6 +4,7 @@
 *.xlsx
 *.xls
 *.tsv
+*.zip
 
 # Output charts (generated locally; not part of the codebase)
 output/

@@ -65,6 +65,30 @@ The three main constructs measured by the survey are:
 
 ---
 
+## Getting the Data Straight From Qualtrics (recommended)
+
+`qualtrics_pull.py` downloads a fresh export through the Qualtrics API, so you
+never have to click through **Export Data**. It saves the CSV to the research
+team's LC State OneDrive (`IRB 2026\Survey Data` by default), never to this
+repository, and removes IP-address and location columns before saving.
+
+```bash
+python qualtrics_pull.py --set-token          # once: paste your API token at the hidden prompt
+python qualtrics_pull.py                      # all responses
+python qualtrics_pull.py --year 2026-27       # one school year only
+```
+
+The API token comes from Qualtrics → Account Settings → Qualtrics IDs. It is
+stored in Windows Credential Manager (or read from the `QUALTRICS_API_TOKEN`
+environment variable) and is never printed or written to a file.
+
+**School codes:** each school's survey link ends in `?School=<code>`. For the
+code to be saved with each response, the survey's **Survey Flow** must start
+with an **Embedded Data** element named `School`. The pull script warns if the
+export has no `School` column.
+
+---
+
 ## Preparing Your Data
 
 The tool expects a Qualtrics CSV export with its standard three-row header
@@ -76,12 +100,42 @@ Import → Export Data → CSV**.
 > The `.gitignore` file in this repository is configured to prevent any `.csv`
 > file from ever being uploaded to GitHub accidentally.
 
-### Filtering before you run
+### Choosing which responses to include (Step 2)
 
-This tool visualises whatever rows you give it. If you want charts for a
-specific subgroup — say, 11th graders only, or a single school — filter your
-spreadsheet first (Excel, Google Sheets, or Numbers all work fine) and save a
-new CSV. Then run the tool on that filtered file.
+The tool now asks which responses go into the report:
+
+- **All schools** — a statewide report, for all years or one school year.
+- **One school, one school year** — the report that may be returned to that
+  school. It holds **only** that school's responses (matched exactly on its
+  `School` code) recorded from 1 July to 30 June of the chosen school year.
+  Under the approved IRB it goes only to the school's designated primary
+  contact named in its Site Authorization Letter.
+
+A school keeps one code every year, so school years are told apart by each
+response's `RecordedDate`, never by the code. Survey previews, tests and spam
+are left out automatically. You can skip the questions on the command line:
+
+```bash
+python survey_viz.py export.csv --school WJ26 --year 2026-27
+```
+
+### Small-number protection (always on for school reports)
+
+Per the approved IRB (Idaho Code § 33-133 aggregate data; SBOE minimum of 5),
+no figure in a report may rest on fewer than **6** students:
+
+| Where | What happens |
+|---|---|
+| Whole selection under 6 | No report is made |
+| A comparison group (e.g. badging / non-badging) under 6 | The split is dropped; charts show all students together |
+| Likert item | Categories under 6 are combined into Agree / Disagree (hatched); if a side is still under 6, the row is not shown |
+| Single-choice question | Categories under 6 are pooled into "Other (combined for privacy)", with the next-smallest added if needed so no count can be worked out by subtraction |
+| Multi-choice option | Options chosen by fewer than 6 students are not shown |
+| Grade-level charts | Grades with fewer than 6 students are not shown |
+
+`--internal` turns the protection off for research-team analysis of all
+schools. Every page is then stamped INTERNAL, and it cannot be combined with
+`--school`.
 
 ---
 
@@ -208,9 +262,12 @@ No statistics or chart-drawing code needs to change.
 
 - **No data file is ever stored in this repository.** The `.gitignore` blocks
   all `.csv`, `.xlsx`, and image files.
-- The `School` column is automatically removed from analysis at load time.
-- Always filter to remove individually identifying information before sharing
-  any output charts when `n` is small.
+- The `School` column is used only to select responses and is dropped before
+  any chart is drawn; only the cover page of a school report names the school.
+- Small groups are combined or hidden automatically (see above).
+- `qualtrics_pull.py` refuses to save data inside this repository folder.
+- `python tests/test_privacy.py` checks the selection and privacy rules on
+  synthetic data (needs `pypdf`).
 
 ---
 
